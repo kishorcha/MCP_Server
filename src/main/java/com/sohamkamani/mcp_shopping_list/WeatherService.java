@@ -29,7 +29,8 @@ public class WeatherService {
 
         city = city.trim();
 
-        // ✅ Normalize a few common Indian city aliases
+        // ✅ Normalize common Indian city aliases
+        // This is safe to run globally, as it only matches specific strings
         switch (city.toLowerCase()) {
             case "bangalore" -> city = "Bengaluru";
             case "mysuru" -> city = "Mysore";
@@ -37,17 +38,18 @@ public class WeatherService {
             case "madras" -> city = "Chennai";
         }
 
-        // ✅ Add country code only if user didn’t specify one
-        if (!city.contains(",")) {
-            city = city + ",IN";
-        }
+        // *** 🛑 PROBLEM FIXED ***
+        // We no longer append ",IN" automatically.
+        // This allows 'q=London' to be searched globally by the API.
+        // If the user wants a specific country, they must provide it
+        // (e.g., "London,UK" or "Portland,US"), which the API already handles.
 
         try {
             RestTemplate restTemplate = new RestTemplate();
 
             // ✅ Let Spring handle encoding properly
             String url = UriComponentsBuilder.fromHttpUrl(BASE_URL)
-                    .queryParam("q", city)
+                    .queryParam("q", city) // Pass the raw city string (e.g., "London" or "London,UK")
                     .queryParam("appid", apiKey)
                     .queryParam("units", "metric")
                     .build(true) // 'true' → keeps commas, handles encoding safely
@@ -65,7 +67,9 @@ public class WeatherService {
             // ✅ Handle “city not found” gracefully
             Object cod = response.get("cod");
             if (cod != null && cod instanceof Number && ((Number) cod).intValue() != 200) {
-                return "City not found or invalid: " + city;
+                // The API's 'message' field is often useful here
+                String message = (String) response.getOrDefault("message", "city not found");
+                return "Weather API error: " + message + " for city '" + city + "'.";
             }
 
             // ✅ Extract details safely
@@ -80,10 +84,22 @@ public class WeatherService {
             double temp = ((Number) main.get("temp")).doubleValue();
             String condition = (String) weather.get("description");
             String cityName = (String) response.get("name");
+            
+            // Also get country for clarity
+            String country = "";
+            if (response.containsKey("sys")) {
+                Map<String, Object> sys = (Map<String, Object>) response.get("sys");
+                if (sys != null && sys.containsKey("country")) {
+                    country = (String) sys.get("country");
+                }
+            }
+
+            String fullCityName = (cityName != null ? cityName : city) + 
+                                  (!country.isEmpty() ? "," + country : "");
 
             return String.format(
                 "The current weather in %s is %s with a temperature of %.1f°C.",
-                cityName != null ? cityName : city, condition, temp
+                fullCityName, condition, temp
             );
 
         } catch (HttpClientErrorException e) {
@@ -93,11 +109,12 @@ public class WeatherService {
             } else if (e.getStatusCode().value() == 401) {
                 return "Invalid API key. Please check your OpenWeatherMap key.";
             } else {
-                return "Weather API error (" + e.getStatusCode() + "): " + e.getMessage();
+                return "Weather API error (" + e.getStatusCode() + "): " + e.getResponseBodyAsString();
             }
 
         } catch (Exception e) {
             // ✅ Catch any unexpected issues
+            e.printStackTrace(); // Good for debugging
             return "Error retrieving weather for " + city + ": " + e.getMessage();
         }
     }
